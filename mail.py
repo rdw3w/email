@@ -22,7 +22,7 @@ CORS(app)
 MY_NAME = "🔥 Rudra X Tech 🔥"
 MY_USERNAME = "@NST_YZ_09"
 API_VERSION = "3.0"
-REQUEST_LIMIT = 50  # Requests per hour
+REQUEST_LIMIT = 100  # Requests per hour
 TIME_WINDOW = 3600  # 1 hour
 
 # Store for rate limiting
@@ -55,40 +55,6 @@ def rate_limit(f):
             }), 429
         
         request_tracker[ip].append(current_time)
-        return f(*args, **kwargs)
-    
-    return decorated_function
-
-def require_api_key(f):
-    """Decorator for API key validation"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-        
-        if not api_key:
-            logger.warning("Missing API key")
-            return jsonify({
-                "error": "Unauthorized",
-                "message": "API key required",
-                "how_to": "Add 'X-API-Key' header or '?api_key=YOUR_KEY' parameter"
-            }), 401
-        
-        expected_key = os.getenv('API_KEY')
-        
-        if not expected_key:
-            logger.error("API_KEY environment variable not configured")
-            return jsonify({
-                "error": "Server configuration error",
-                "message": "API_KEY environment variable not set"
-            }), 500
-        
-        if api_key != expected_key:
-            logger.warning(f"Invalid API key attempt")
-            return jsonify({
-                "error": "Unauthorized",
-                "message": "Invalid API key"
-            }), 401
-        
         return f(*args, **kwargs)
     
     return decorated_function
@@ -130,7 +96,7 @@ def home():
 
 @app.route("/api/health", methods=['GET'])
 def health():
-    """Health check endpoint - no auth required"""
+    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "version": API_VERSION,
@@ -141,7 +107,6 @@ def health():
 
 @app.route("/api/search", methods=['GET'])
 @rate_limit
-@require_api_key
 def search():
     """Advanced email search with comprehensive results"""
     try:
@@ -155,7 +120,7 @@ def search():
             return jsonify({
                 "error": "Missing email parameter",
                 "message": "Please provide email via ?mail=your@email.com",
-                "example": "/api/search?mail=test@example.com&api_key=YOUR_KEY"
+                "example": "/api/search?mail=test@example.com"
             }), 400
 
         if not is_valid_email(email):
@@ -283,7 +248,6 @@ def search():
 
 @app.route("/api/batch-search", methods=['POST'])
 @rate_limit
-@require_api_key
 def batch_search():
     """Batch search for multiple emails"""
     try:
@@ -373,7 +337,7 @@ def batch_search():
 
 @app.route("/api/stats", methods=['GET'])
 def stats():
-    """API statistics - no auth required"""
+    """API statistics"""
     return jsonify({
         "api_name": "Email Breach Finder API",
         "version": API_VERSION,
@@ -384,26 +348,25 @@ def stats():
             "health": {
                 "path": "/api/health",
                 "method": "GET",
-                "auth": False,
-                "rate_limit": True
+                "description": "Health check endpoint"
             },
             "search": {
                 "path": "/api/search",
                 "method": "GET",
-                "auth": True,
-                "params": ["mail", "breaches", "history", "format", "api_key"],
-                "example": "/api/search?mail=test@example.com&api_key=YOUR_KEY"
+                "params": ["mail", "breaches", "history", "format"],
+                "example": "/api/search?mail=test@example.com",
+                "description": "Search for email in breach database"
             },
             "batch_search": {
                 "path": "/api/batch-search",
                 "method": "POST",
-                "auth": True,
-                "body": {"emails": ["email1@test.com", "email2@test.com"]}
+                "body": {"emails": ["email1@test.com", "email2@test.com"]},
+                "description": "Batch search for multiple emails"
             },
             "stats": {
                 "path": "/api/stats",
                 "method": "GET",
-                "auth": False
+                "description": "API statistics and information"
             }
         },
         "rate_limit": {
@@ -411,10 +374,13 @@ def stats():
             "window": f"{TIME_WINDOW}s",
             "note": "Per IP address"
         },
-        "authentication": {
-            "method": "API Key",
-            "header": "X-API-Key",
-            "alternative": "?api_key=YOUR_KEY"
+        "features": {
+            "no_authentication_required": True,
+            "rate_limiting": True,
+            "email_validation": True,
+            "batch_support": True,
+            "xml_support": True,
+            "cors_enabled": True
         },
         "timestamp": datetime.now().isoformat()
     }), 200
