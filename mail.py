@@ -4,6 +4,10 @@ import json
 
 app = Flask(__name__)
 
+# Your details
+MY_NAME = "rdw3w"
+MY_USERNAME = "@NST_YZ_09"
+
 @app.route("/search")
 def search():
     email = request.args.get("mail")
@@ -41,11 +45,28 @@ def search():
             timeout=30
         )
 
-        return jsonify(r.json())
+        result = r.json()
+        
+        # Add your name and username to every response
+        if isinstance(result, dict):
+            result["searcher_name"] = MY_NAME
+            result["searcher_username"] = MY_USERNAME
+            result["verified"] = True
+        elif isinstance(result, list):
+            result = {
+                "data": result,
+                "searcher_name": MY_NAME,
+                "searcher_username": MY_USERNAME,
+                "verified": True
+            }
+
+        return jsonify(result)
 
     except Exception as e:
         return jsonify({
-            "error": str(e)
+            "error": str(e),
+            "searcher_name": MY_NAME,
+            "searcher_username": MY_USERNAME
         }), 500
 
 if __name__ == "__main__":
