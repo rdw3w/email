@@ -12,10 +12,10 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
 
 # Configuration
-MY_NAME = "rdw3w"
+MY_NAME = "🔥 Rudra X Tech 🔥"
 MY_USERNAME = "@NST_YZ_09"
 API_VERSION = "2.0"
-REQUEST_LIMIT = 100
+REQUEST_LIMIT = 1000
 TIME_WINDOW = 3600  # 1 hour
 
 # Store for rate limiting
