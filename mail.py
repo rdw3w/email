@@ -9,6 +9,11 @@ from functools import wraps
 import time
 import re
 from xml.sax.saxutils import escape
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
@@ -16,15 +21,17 @@ CORS(app)
 # Configuration
 MY_NAME = "🔥 Rudra X Tech 🔥"
 MY_USERNAME = "@NST_YZ_09"
-API_VERSION = "2.0"
-REQUEST_LIMIT = 100  # Reduced from 1000 for better security
+API_VERSION = "3.0"
+REQUEST_LIMIT = 50  # Requests per hour
 TIME_WINDOW = 3600  # 1 hour
 
 # Store for rate limiting
 request_tracker = {}
 
-# Decorator for rate limiting
+# ==================== DECORATORS ====================
+
 def rate_limit(f):
+    """Decorator for rate limiting"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         ip = request.remote_addr
@@ -37,11 +44,14 @@ def rate_limit(f):
         request_tracker[ip] = [t for t in request_tracker[ip] if current_time - t < TIME_WINDOW]
         
         if len(request_tracker[ip]) >= REQUEST_LIMIT:
+            retry_after = int(TIME_WINDOW - (current_time - request_tracker[ip][0]))
+            logger.warning(f"Rate limit exceeded for IP: {ip}")
             return jsonify({
                 "error": "Rate limit exceeded",
                 "limit": REQUEST_LIMIT,
-                "window": TIME_WINDOW,
-                "retry_after": int(TIME_WINDOW - (current_time - request_tracker[ip][0]))
+                "window": f"{TIME_WINDOW}s",
+                "retry_after": retry_after,
+                "message": f"Max {REQUEST_LIMIT} requests per hour"
             }), 429
         
         request_tracker[ip].append(current_time)
@@ -49,51 +59,84 @@ def rate_limit(f):
     
     return decorated_function
 
-# Decorator for API key validation
 def require_api_key(f):
+    """Decorator for API key validation"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        api_key = request.headers.get('X-API-Key')
-        # Get from environment variable, NO hardcoded default
+        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+        
+        if not api_key:
+            logger.warning("Missing API key")
+            return jsonify({
+                "error": "Unauthorized",
+                "message": "API key required",
+                "how_to": "Add 'X-API-Key' header or '?api_key=YOUR_KEY' parameter"
+            }), 401
+        
         expected_key = os.getenv('API_KEY')
         
         if not expected_key:
+            logger.error("API_KEY environment variable not configured")
             return jsonify({
                 "error": "Server configuration error",
                 "message": "API_KEY environment variable not set"
             }), 500
         
-        if not api_key or api_key != expected_key:
+        if api_key != expected_key:
+            logger.warning(f"Invalid API key attempt")
             return jsonify({
                 "error": "Unauthorized",
-                "message": "Valid API key required"
+                "message": "Invalid API key"
             }), 401
+        
         return f(*args, **kwargs)
+    
     return decorated_function
 
-# Email validation function
+# ==================== VALIDATION FUNCTIONS ====================
+
 def is_valid_email(email):
-    """Validate email format using regex"""
+    """Validate email format using RFC 5322 simplified regex"""
+    if not isinstance(email, str):
+        return False
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
+
+def sanitize_input(text):
+    """Sanitize user input"""
+    if not isinstance(text, str):
+        return ""
+    return text.strip()[:500]  # Max 500 chars
+
+# ==================== ROUTES ====================
 
 @app.route("/")
 def home():
     """Serve UI"""
-    return render_template('index.html', 
-        name=MY_NAME, 
-        username=MY_USERNAME,
-        version=API_VERSION
-    )
+    try:
+        return render_template('index.html', 
+            name=MY_NAME, 
+            username=MY_USERNAME,
+            version=API_VERSION
+        )
+    except Exception as e:
+        logger.error(f"Error rendering home: {str(e)}")
+        return jsonify({
+            "status": "ready",
+            "message": "Email Breach Finder API",
+            "version": API_VERSION,
+            "endpoints": ["/api/health", "/api/search", "/api/batch-search", "/api/stats"]
+        }), 200
 
 @app.route("/api/health", methods=['GET'])
 def health():
-    """Health check endpoint"""
+    """Health check endpoint - no auth required"""
     return jsonify({
         "status": "healthy",
         "version": API_VERSION,
         "timestamp": datetime.now().isoformat(),
-        "uptime": "online"
+        "uptime": "online",
+        "environment": "production" if os.getenv('ENVIRONMENT') == 'prod' else "development"
     }), 200
 
 @app.route("/api/search", methods=['GET'])
@@ -101,141 +144,140 @@ def health():
 @require_api_key
 def search():
     """Advanced email search with comprehensive results"""
-    email = request.args.get("mail", "").strip()
-    include_breaches = request.args.get("breaches", "true").lower() == "true"
-    include_history = request.args.get("history", "false").lower() == "true"
-    format_type = request.args.get("format", "json")
-
-    # Validation
-    if not email:
-        return jsonify({
-            "error": "Missing email parameter",
-            "message": "Please provide email via ?mail=your@email.com",
-            "example": "/api/search?mail=test@example.com"
-        }), 400
-
-    # Proper email validation
-    if not is_valid_email(email):
-        return jsonify({
-            "error": "Invalid email format",
-            "email": email,
-            "message": "Please provide a valid email address"
-        }), 400
-
-    # Generate request ID
-    request_id = hashlib.md5(f"{email}{time.time()}".encode()).hexdigest()[:12]
-
-    payload = {
-        "file": "/app/rpc/search.telefunc.ts",
-        "name": "public_search",
-        "args": [{
-            "piis": [{
-                "type": "email",
-                "value": email,
-                "pii_id": "1"
-            }],
-            "main_breach_id": "!undefined"
-        }]
-    }
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        "Content-Type": "text/plain",
-        "Origin": "https://databreach.com",
-        "Referer": "https://databreach.com/",
-        "X-Request-ID": request_id
-    }
-
     try:
-        start_time = time.time()
-        r = requests.post(
-            "https://databreach.com/_telefunc",
-            headers=headers,
-            data=json.dumps(payload, separators=(",", ":")),
-            timeout=30
-        )
-        elapsed_time = time.time() - start_time
+        email = sanitize_input(request.args.get("mail", ""))
+        include_breaches = request.args.get("breaches", "true").lower() == "true"
+        include_history = request.args.get("history", "false").lower() == "true"
+        format_type = request.args.get("format", "json").lower()
 
-        result = r.json() if r.text else {}
-        
-        # Advanced response formatting
-        response_data = {
-            # Meta information
-            "meta": {
-                "request_id": request_id,
-                "timestamp": datetime.now().isoformat(),
-                "version": API_VERSION,
-                "response_time_ms": round(elapsed_time * 1000, 2),
-                "status": "success"
-            },
-            
-            # Searcher information
-            "searcher": {
-                "name": MY_NAME,
-                "username": MY_USERNAME,
-                "verified": True
-            },
-            
-            # Search information
-            "search_query": {
+        # Validation
+        if not email:
+            return jsonify({
+                "error": "Missing email parameter",
+                "message": "Please provide email via ?mail=your@email.com",
+                "example": "/api/search?mail=test@example.com&api_key=YOUR_KEY"
+            }), 400
+
+        if not is_valid_email(email):
+            return jsonify({
+                "error": "Invalid email format",
                 "email": email,
-                "include_breaches": include_breaches,
-                "include_history": include_history
-            },
-            
-            # Breach data
-            "breaches": result.get("breaches", []) if include_breaches else [],
-            
-            # Raw result
-            "data": result
+                "message": "Please provide a valid email address"
+            }), 400
+
+        # Generate request ID
+        request_id = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:16]
+
+        logger.info(f"Search initiated for: {email[:5]}***")
+
+        payload = {
+            "file": "/app/rpc/search.telefunc.ts",
+            "name": "public_search",
+            "args": [{
+                "piis": [{
+                    "type": "email",
+                    "value": email,
+                    "pii_id": "1"
+                }],
+                "main_breach_id": "!undefined"
+            }]
         }
 
-        # Add history if requested
-        if include_history:
-            response_data["history"] = {
-                "search_count": 1,
-                "last_searched": datetime.now().isoformat()
-            }
-
-        # Add statistics
-        response_data["statistics"] = {
-            "total_breaches": len(response_data.get("breaches", [])),
-            "compromised_accounts": len(response_data.get("data", {}).get("hits", [])) if isinstance(response_data.get("data"), dict) else 0
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+            "Origin": "https://databreach.com",
+            "Referer": "https://databreach.com/",
+            "X-Request-ID": request_id
         }
 
-        if format_type == "xml":
-            return convert_to_xml(response_data)
-        
-        return jsonify(response_data), 200
+        try:
+            start_time = time.time()
+            r = requests.post(
+                "https://databreach.com/_telefunc",
+                headers=headers,
+                json=payload,
+                timeout=15
+            )
+            elapsed_time = time.time() - start_time
 
-    except requests.Timeout:
-        return jsonify({
-            "error": "Request timeout",
-            "message": "The search took too long. Please try again.",
-            "searcher": {
-                "name": MY_NAME,
-                "username": MY_USERNAME
-            }
-        }), 504
+            result = {}
+            try:
+                result = r.json() if r.text else {}
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse response for {email[:5]}***")
+                result = {"raw_response": r.text[:200]}
 
-    except requests.ConnectionError:
-        return jsonify({
-            "error": "Connection error",
-            "message": "Unable to connect to breach database",
-            "searcher": {
-                "name": MY_NAME,
-                "username": MY_USERNAME
+            # Advanced response formatting
+            response_data = {
+                "meta": {
+                    "request_id": request_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "version": API_VERSION,
+                    "response_time_ms": round(elapsed_time * 1000, 2),
+                    "status": "success",
+                    "http_status": r.status_code
+                },
+                
+                "searcher": {
+                    "name": MY_NAME,
+                    "username": MY_USERNAME,
+                    "verified": True
+                },
+                
+                "search_query": {
+                    "email_masked": f"{email[0]}***@{email.split('@')[1]}" if "@" in email else "invalid",
+                    "include_breaches": include_breaches,
+                    "include_history": include_history
+                },
+                
+                "breaches": result.get("breaches", []) if include_breaches else [],
+                
+                "data": result
             }
-        }), 502
+
+            # Add history if requested
+            if include_history:
+                response_data["history"] = {
+                    "search_count": 1,
+                    "last_searched": datetime.now().isoformat()
+                }
+
+            # Add statistics
+            response_data["statistics"] = {
+                "total_breaches": len(response_data.get("breaches", [])),
+                "compromised_accounts": len(response_data.get("data", {}).get("hits", [])) if isinstance(response_data.get("data"), dict) else 0,
+                "response_time_ms": response_data["meta"]["response_time_ms"]
+            }
+
+            if format_type == "xml":
+                return convert_to_xml(response_data)
+            
+            return jsonify(response_data), 200
+
+        except requests.Timeout:
+            logger.error(f"Timeout for {email[:5]}***")
+            return jsonify({
+                "error": "Request timeout",
+                "message": "The search took too long. Please try again.",
+                "timeout_seconds": 15,
+                "searcher": {"name": MY_NAME, "username": MY_USERNAME}
+            }), 504
+
+        except requests.ConnectionError:
+            logger.error("Connection error to databreach.com")
+            return jsonify({
+                "error": "Connection error",
+                "message": "Unable to connect to breach database. Try again later.",
+                "searcher": {"name": MY_NAME, "username": MY_USERNAME}
+            }), 502
 
     except Exception as e:
+        logger.error(f"Unexpected error in search: {str(e)}")
         return jsonify({
             "error": "Server error",
-            "message": str(e),
-            "searcher": {
-                "name": MY_NAME,
-                "username": MY_USERNAME
-            },
+            "message": "An unexpected error occurred",
+            "request_id": request_id if 'request_id' in locals() else None,
             "timestamp": datetime.now().isoformat()
         }), 500
 
@@ -244,143 +286,195 @@ def search():
 @require_api_key
 def batch_search():
     """Batch search for multiple emails"""
-    data = request.get_json()
-    
-    if not data or "emails" not in data:
-        return jsonify({
-            "error": "Invalid request",
-            "message": "POST body must contain 'emails' array"
-        }), 400
-    
-    emails = data.get("emails", [])
-    if not isinstance(emails, list) or len(emails) == 0:
-        return jsonify({
-            "error": "Invalid emails parameter",
-            "message": "emails must be a non-empty array"
-        }), 400
-    
-    if len(emails) > 100:
-        return jsonify({
-            "error": "Too many emails",
-            "message": "Maximum 100 emails per request",
-            "limit": 100,
-            "received": len(emails)
-        }), 413
-
-    results = []
-    errors = []
-    
-    for email in emails[:100]:
-        email = email.strip() if isinstance(email, str) else email
+    try:
+        data = request.get_json() or {}
         
-        # Validate each email
-        if not isinstance(email, str) or not is_valid_email(email):
-            errors.append({
-                "email": email,
-                "error": "Invalid email format"
-            })
-            continue
+        if "emails" not in data:
+            return jsonify({
+                "error": "Invalid request",
+                "message": "POST body must contain 'emails' array",
+                "example": '{"emails": ["test@example.com", "user@domain.com"]}'
+            }), 400
+        
+        emails = data.get("emails", [])
+        if not isinstance(emails, list) or len(emails) == 0:
+            return jsonify({
+                "error": "Invalid emails parameter",
+                "message": "emails must be a non-empty array"
+            }), 400
+        
+        if len(emails) > 50:
+            return jsonify({
+                "error": "Too many emails",
+                "message": "Maximum 50 emails per request",
+                "limit": 50,
+                "received": len(emails)
+            }), 413
+
+        results = []
+        errors = []
+        batch_id = hashlib.sha256(f"{time.time()}".encode()).hexdigest()[:12]
+        
+        logger.info(f"Batch search initiated with {len(emails)} emails")
+
+        for idx, email in enumerate(emails[:50]):
+            email = sanitize_input(email) if isinstance(email, str) else ""
             
-        try:
-            # Call search for each email (simplified)
-            results.append({
-                "email": email,
-                "status": "processed"
-            })
-        except Exception as e:
-            errors.append({
-                "email": email,
-                "error": str(e)
-            })
-    
-    return jsonify({
-        "meta": {
-            "timestamp": datetime.now().isoformat(),
-            "version": API_VERSION,
-            "batch_id": hashlib.md5(f"{time.time()}".encode()).hexdigest()[:12]
-        },
-        "results": results,
-        "errors": errors,
-        "summary": {
-            "total": len(emails),
-            "successful": len(results),
-            "failed": len(errors)
-        },
-        "searcher": {
-            "name": MY_NAME,
-            "username": MY_USERNAME
+            if not is_valid_email(email):
+                errors.append({
+                    "index": idx,
+                    "email": email if email else "[empty]",
+                    "error": "Invalid email format"
+                })
+                continue
+                
+            try:
+                results.append({
+                    "index": idx,
+                    "email": email,
+                    "status": "processed",
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as e:
+                errors.append({
+                    "index": idx,
+                    "email": email,
+                    "error": str(e)
+                })
+        
+        response = {
+            "meta": {
+                "timestamp": datetime.now().isoformat(),
+                "version": API_VERSION,
+                "batch_id": batch_id
+            },
+            "results": results,
+            "errors": errors,
+            "summary": {
+                "total": len(emails),
+                "successful": len(results),
+                "failed": len(errors)
+            },
+            "searcher": {
+                "name": MY_NAME,
+                "username": MY_USERNAME
+            }
         }
-    }), 200
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in batch_search: {str(e)}")
+        return jsonify({
+            "error": "Server error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 @app.route("/api/stats", methods=['GET'])
 def stats():
-    """API statistics"""
+    """API statistics - no auth required"""
     return jsonify({
         "api_name": "Email Breach Finder API",
         "version": API_VERSION,
+        "description": "Advanced email breach database search API",
         "author": MY_USERNAME,
         "owner": MY_NAME,
         "endpoints": {
-            "health": "/api/health",
-            "search": "/api/search",
-            "batch_search": "/api/batch-search",
-            "stats": "/api/stats",
-            "ui": "/"
+            "health": {
+                "path": "/api/health",
+                "method": "GET",
+                "auth": False,
+                "rate_limit": True
+            },
+            "search": {
+                "path": "/api/search",
+                "method": "GET",
+                "auth": True,
+                "params": ["mail", "breaches", "history", "format", "api_key"],
+                "example": "/api/search?mail=test@example.com&api_key=YOUR_KEY"
+            },
+            "batch_search": {
+                "path": "/api/batch-search",
+                "method": "POST",
+                "auth": True,
+                "body": {"emails": ["email1@test.com", "email2@test.com"]}
+            },
+            "stats": {
+                "path": "/api/stats",
+                "method": "GET",
+                "auth": False
+            }
         },
         "rate_limit": {
             "requests": REQUEST_LIMIT,
-            "window": f"{TIME_WINDOW}s"
+            "window": f"{TIME_WINDOW}s",
+            "note": "Per IP address"
+        },
+        "authentication": {
+            "method": "API Key",
+            "header": "X-API-Key",
+            "alternative": "?api_key=YOUR_KEY"
         },
         "timestamp": datetime.now().isoformat()
     }), 200
+
+# ==================== XML CONVERSION ====================
 
 def convert_to_xml(data):
     """Convert JSON response to XML with proper escaping"""
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<response>\n'
     
-    def dict_to_xml(d, parent=""):
+    def dict_to_xml(d, indent=1):
         xml_str = ""
+        indent_str = "  " * indent
+        
         for key, value in d.items():
-            # Escape key
-            safe_key = escape(str(key))
+            safe_key = escape(str(key)).replace(" ", "_")
             
             if isinstance(value, dict):
-                xml_str += f"  <{safe_key}>\n"
-                xml_str += dict_to_xml(value, safe_key)
-                xml_str += f"  </{safe_key}>\n"
+                xml_str += f"{indent_str}<{safe_key}>\n"
+                xml_str += dict_to_xml(value, indent + 1)
+                xml_str += f"{indent_str}</{safe_key}>\n"
             elif isinstance(value, list):
-                xml_str += f"  <{safe_key}>\n"
+                xml_str += f"{indent_str}<{safe_key}>\n"
                 for item in value:
                     if isinstance(item, dict):
-                        xml_str += dict_to_xml(item, "item")
+                        xml_str += dict_to_xml({"item": item}, indent + 1)
                     else:
-                        # Escape item value
                         safe_item = escape(str(item))
-                        xml_str += f"    <item>{safe_item}</item>\n"
-                xml_str += f"  </{safe_key}>\n"
-            else:
-                # Escape value
+                        xml_str += f"{indent_str}  <item>{safe_item}</item>\n"
+                xml_str += f"{indent_str}</{safe_key}>\n"
+            elif value is not None:
                 safe_value = escape(str(value))
-                xml_str += f"  <{safe_key}>{safe_value}</{safe_key}>\n"
+                xml_str += f"{indent_str}<{safe_key}>{safe_value}</{safe_key}>\n"
+        
         return xml_str
     
-    xml += dict_to_xml(data)
+    xml += dict_to_xml(data, indent=1)
     xml += '</response>'
     
-    return xml, 200, {'Content-Type': 'application/xml'}
+    return xml, 200, {'Content-Type': 'application/xml; charset=utf-8'}
+
+# ==================== STATIC FILES ====================
 
 @app.route("/static/<path:path>")
 def send_static(path):
     """Serve static files"""
-    return send_from_directory('static', path)
+    try:
+        return send_from_directory('static', path)
+    except Exception as e:
+        logger.error(f"Error serving static file {path}: {str(e)}")
+        return jsonify({"error": "File not found"}), 404
 
-# Error handlers
+# ==================== ERROR HANDLERS ====================
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({
         "error": "Not found",
         "message": "The requested endpoint does not exist",
-        "available_endpoints": "/api/stats"
+        "available_endpoints": ["/api/health", "/api/stats", "/api/search", "/api/batch-search"]
     }), 404
 
 @app.errorhandler(405)
@@ -388,8 +482,20 @@ def method_not_allowed(error):
     return jsonify({
         "error": "Method not allowed",
         "message": f"This endpoint does not support {request.method}",
-        "hint": "Check /api/stats for available endpoints"
+        "hint": "Check /api/stats for available endpoints and methods"
     }), 405
 
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal server error: {str(error)}")
+    return jsonify({
+        "error": "Internal server error",
+        "message": "Something went wrong. Please try again later."
+    }), 500
+
+# ==================== STARTUP ====================
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.getenv('PORT', 5000))
+    debug = os.getenv('DEBUG', 'False').lower() == 'true'
+    app.run(host="0.0.0.0", port=port, debug=debug)
