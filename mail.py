@@ -102,7 +102,7 @@ def health():
         "version": API_VERSION,
         "timestamp": datetime.now().isoformat(),
         "uptime": "online",
-        "environment": "production" if os.getenv('ENVIRONMENT') == 'prod' else "development"
+        "environment": "production"
     }), 200
 
 @app.route("/api/search", methods=['GET'])
