@@ -52,7 +52,7 @@ def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = request.headers.get('X-API-Key')
-        if not api_key or api_key != os.getenv('API_KEY', 'rdw3w_secret_key_2024'):
+        if not api_key or api_key != os.getenv('API_KEY', 'rudra12'):
             return jsonify({
                 "error": "Unauthorized",
                 "message": "Valid API key required"
