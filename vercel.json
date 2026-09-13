@@ -22,8 +22,5 @@
       "src": "/(.*)",
       "dest": "mail.py"
     }
-  ],
-  "env": {
-    "API_KEY": "@api_key"
-  }
+  ]
 }
