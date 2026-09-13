@@ -7,6 +7,8 @@ import hashlib
 import os
 from functools import wraps
 import time
+import re
+from xml.sax.saxutils import escape
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
@@ -15,7 +17,7 @@ CORS(app)
 MY_NAME = "🔥 Rudra X Tech 🔥"
 MY_USERNAME = "@NST_YZ_09"
 API_VERSION = "2.0"
-REQUEST_LIMIT = 1000
+REQUEST_LIMIT = 100  # Reduced from 1000 for better security
 TIME_WINDOW = 3600  # 1 hour
 
 # Store for rate limiting
@@ -52,13 +54,28 @@ def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = request.headers.get('X-API-Key')
-        if not api_key or api_key != os.getenv('API_KEY', 'demo09'):
+        # Get from environment variable, NO hardcoded default
+        expected_key = os.getenv('API_KEY')
+        
+        if not expected_key:
+            return jsonify({
+                "error": "Server configuration error",
+                "message": "API_KEY environment variable not set"
+            }), 500
+        
+        if not api_key or api_key != expected_key:
             return jsonify({
                 "error": "Unauthorized",
                 "message": "Valid API key required"
             }), 401
         return f(*args, **kwargs)
     return decorated_function
+
+# Email validation function
+def is_valid_email(email):
+    """Validate email format using regex"""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
 
 @app.route("/")
 def home():
@@ -81,6 +98,7 @@ def health():
 
 @app.route("/api/search", methods=['GET'])
 @rate_limit
+@require_api_key
 def search():
     """Advanced email search with comprehensive results"""
     email = request.args.get("mail", "").strip()
@@ -96,10 +114,12 @@ def search():
             "example": "/api/search?mail=test@example.com"
         }), 400
 
-    if "@" not in email or "." not in email:
+    # Proper email validation
+    if not is_valid_email(email):
         return jsonify({
             "error": "Invalid email format",
-            "email": email
+            "email": email,
+            "message": "Please provide a valid email address"
         }), 400
 
     # Generate request ID
@@ -221,6 +241,7 @@ def search():
 
 @app.route("/api/batch-search", methods=['POST'])
 @rate_limit
+@require_api_key
 def batch_search():
     """Batch search for multiple emails"""
     data = request.get_json()
@@ -250,6 +271,16 @@ def batch_search():
     errors = []
     
     for email in emails[:100]:
+        email = email.strip() if isinstance(email, str) else email
+        
+        # Validate each email
+        if not isinstance(email, str) or not is_valid_email(email):
+            errors.append({
+                "email": email,
+                "error": "Invalid email format"
+            })
+            continue
+            
         try:
             # Call search for each email (simplified)
             results.append({
@@ -304,26 +335,33 @@ def stats():
     }), 200
 
 def convert_to_xml(data):
-    """Convert JSON response to XML"""
+    """Convert JSON response to XML with proper escaping"""
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<response>\n'
     
     def dict_to_xml(d, parent=""):
         xml_str = ""
         for key, value in d.items():
+            # Escape key
+            safe_key = escape(str(key))
+            
             if isinstance(value, dict):
-                xml_str += f"  <{key}>\n"
-                xml_str += dict_to_xml(value, key)
-                xml_str += f"  </{key}>\n"
+                xml_str += f"  <{safe_key}>\n"
+                xml_str += dict_to_xml(value, safe_key)
+                xml_str += f"  </{safe_key}>\n"
             elif isinstance(value, list):
-                xml_str += f"  <{key}>\n"
+                xml_str += f"  <{safe_key}>\n"
                 for item in value:
                     if isinstance(item, dict):
                         xml_str += dict_to_xml(item, "item")
                     else:
-                        xml_str += f"    <item>{item}</item>\n"
-                xml_str += f"  </{key}>\n"
+                        # Escape item value
+                        safe_item = escape(str(item))
+                        xml_str += f"    <item>{safe_item}</item>\n"
+                xml_str += f"  </{safe_key}>\n"
             else:
-                xml_str += f"  <{key}>{value}</{key}>\n"
+                # Escape value
+                safe_value = escape(str(value))
+                xml_str += f"  <{safe_key}>{safe_value}</{safe_key}>\n"
         return xml_str
     
     xml += dict_to_xml(data)
